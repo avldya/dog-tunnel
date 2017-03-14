@@ -34,6 +34,9 @@ var serverBustAddr = flag.String("buster", "dog-tunnel.tk:8018", "MakeHole serve
 
 var addInitAddr = flag.String("addip", "127.0.0.1", "addip for bust,xx.xx.xx.xx;xx.xx.xx.xx;")
 var pipeNum = flag.Int("pipen", 1, "pipe num for transmission")
+var kcpSettings = flag.String("kcp", "", "k1:v1;k2:v2;... k in (nodelay, resend, nc, snd, rcv, mtu),two sides should use the same setting")
+var dataShards = flag.Int("ds", 0, "dataShards for fec, only available in p2p mode, two sides should be same")
+var parityShards = flag.Int("ps", 0, "parityShards for fec, only available in p2p mode, two sides should be same")
 
 var serveName = flag.String("reg", "", "reg the name for client link, must assign reg or link")
 
@@ -361,6 +364,49 @@ func (session *UDPMakeSession) beginMakeHole(content string) {
 	}
 }
 
+func getKcpSetting() *nat.KcpSetting {
+	setting := nat.DefaultKcpSetting()
+	//bSetResend := false
+	if *kcpSettings != "" {
+		arr := strings.Split(*kcpSettings, ";")
+		for _, v := range arr {
+			_arr := strings.Split(v, ":")
+			if len(_arr) == 2 {
+				k := _arr[0]
+				var val int32
+				var _val int
+				_val, _ = strconv.Atoi(_arr[1])
+				val = int32(_val)
+
+				switch k {
+				case "nodelay":
+					setting.Nodelay = val
+				case "resend":
+					setting.Resend = val
+					//bSetResend = true
+				case "nc":
+					setting.Nc = val
+				case "snd":
+					setting.Sndwnd = val
+				case "rcv":
+					setting.Rcvwnd = val
+				case "mtu":
+					setting.Mtu = val
+				}
+			}
+		}
+	}
+	//setting.Xor = *xorData
+	/*
+		if *dataShards > 0 && *parityShards > 0 {
+			if !bSetResend {
+				setting.Resend = 0
+				println("resend default to 0 in fec mode")
+			}
+		}*/
+	return setting
+}
+
 func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	id := session.id
 	var otherAddrList string
@@ -379,6 +425,9 @@ func (session *UDPMakeSession) reportAddrList(buster bool, outip string) {
 	outip += ";" + *addInitAddr
 	_id, _ := strconv.Atoi(id)
 	engine, err := nat.Init(outip, buster, _id, *serverBustAddr)
+	engine.Kcp = getKcpSetting()
+	engine.D = *dataShards
+	engine.P = *parityShards
 	if err != nil {
 		println("init error", err.Error())
 		disconnect()
@@ -440,6 +489,14 @@ func main() {
 	}
 	if !*bVerbose {
 		log.SetOutput(ioutil.Discard)
+	}
+	if *dataShards < 0 || *dataShards >= 128 {
+		println("-ds should in [0-127]")
+		return
+	}
+	if *parityShards < 0 || *parityShards >= 128 {
+		println("-ds should in [0-127]")
+		return
 	}
 	if *serveName == "" && *linkName == "" {
 		println("you must assign reg or link")
@@ -1051,7 +1108,7 @@ func (sc *Client) MultiListen() bool {
 		}
 		go func() {
 			quit := false
-			ping := time.NewTicker(time.Second * 5)
+			ping := time.NewTicker(time.Second)
 			go func() {
 			out:
 				for {
@@ -1066,7 +1123,6 @@ func (sc *Client) MultiListen() bool {
 					}
 				}
 			}()
-			ping.Stop()
 			for {
 				conn, err := g_LocalConn.Accept()
 				if err != nil {
@@ -1088,6 +1144,7 @@ func (sc *Client) MultiListen() bool {
 				go handleLocalServerResponse(sc, sessionId)
 			}
 			quit = true
+			ping.Stop()
 		}()
 		mode := "p2p mode"
 		if !sc.bUdp {
@@ -1171,7 +1228,7 @@ func handleLocalPortResponse(client *Client, id string) {
 	if conn == nil {
 		return
 	}
-	arr := make([]byte, 1000)
+	arr := make([]byte, nat.SendBuffSize)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)
@@ -1199,7 +1256,7 @@ func handleLocalServerResponse(client *Client, sessionId string) {
 	}
 	conn := session.localConn
 	common.Write(pipe, sessionId, "tunnel_open", "")
-	arr := make([]byte, 1000)
+	arr := make([]byte, nat.SendBuffSize)
 	reader := bufio.NewReader(conn)
 	for {
 		size, err := reader.Read(arr)
